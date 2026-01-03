@@ -1,0 +1,348 @@
+const express = require('express');
+const { nanoid } = require('nanoid');
+const { Resend } = require('resend');
+const { body, validationResult } = require('express-validator');
+const { DatabaseHelper } = require('../config/database');
+
+const router = express.Router();
+
+// Initialize Resend
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Generate OTP
+function generateOTP() {
+  return nanoid(process.env.OTP_LENGTH || 6).toUpperCase();
+}
+
+// Send OTP email
+async function sendOTPEmail(email, name, otpCode) {
+  const { data, error } = await resend.emails.send({
+    from: 'Astrivya <team@astrivya.ai>',
+    to: [email],
+    subject: 'Your Astrivya Verification Code',
+    html: `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Verify Your Astrivya Account</title>
+        </head>
+        <body style="
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          margin: 0;
+          padding: 0;
+          background-color: #f9fafb;
+        ">
+          <div style="
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+          ">
+            <!-- Header -->
+            <div style="
+              text-align: center;
+              margin-bottom: 30px;
+            ">
+              <h1 style="
+                color: #1f2937;
+                font-size: 32px;
+                font-weight: 700;
+                margin: 0;
+              ">Welcome to Astrivya</h1>
+              <p style="
+                color: #6b7280;
+                font-size: 16px;
+                margin: 10px 0 0 0;
+              ">The future of productivity is here</p>
+            </div>
+
+            <!-- Main Content -->
+            <div style="
+              background: white;
+              border-radius: 16px;
+              padding: 40px;
+              box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+              margin-bottom: 30px;
+            ">
+              <div style="
+                text-align: center;
+                margin-bottom: 30px;
+              ">
+                <h2 style="
+                  color: #1f2937;
+                  font-size: 24px;
+                  font-weight: 600;
+                  margin: 0 0 10px 0;
+                ">Verify Your Email</h2>
+                <p style="
+                  color: #6b7280;
+                  font-size: 16px;
+                  margin: 0;
+                  line-height: 1.5;
+                ">
+                  Hi ${name}! We're excited to have you join the Astrivya community.
+                  Please use the verification code below to complete your registration.
+                </p>
+              </div>
+
+              <!-- OTP Code -->
+              <div style="
+                background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+                border-radius: 12px;
+                padding: 30px;
+                text-align: center;
+                margin: 30px 0;
+              ">
+                <div style="
+                  font-size: 36px;
+                  font-weight: bold;
+                  color: white;
+                  letter-spacing: 6px;
+                  font-family: 'Courier New', monospace;
+                ">
+                  ${otpCode}
+                </div>
+              </div>
+
+              <!-- Instructions -->
+              <div style="
+                text-align: center;
+                margin-bottom: 20px;
+              ">
+                <p style="
+                  color: #6b7280;
+                  font-size: 16px;
+                  margin: 0 0 10px 0;
+                ">
+                  This code will expire in <strong>10 minutes</strong>.
+                </p>
+                <p style="
+                  color: #9ca3af;
+                  font-size: 14px;
+                  margin: 0;
+                ">
+                  If you didn't request this code, please ignore this email.
+                </p>
+              </div>
+            </div>
+
+            <!-- Footer -->
+            <div style="
+              text-align: center;
+              color: #9ca3af;
+              font-size: 12px;
+            ">
+              <p>© 2025 Astrivya Systems. All rights reserved.</p>
+              <p>
+                Questions? Reach us at
+                <a href="mailto:team@astrivya.ai" style="color: #f59e0b;"> team@astrivya.ai</a>
+              </p>
+            </div>
+          </div>
+        </body>
+      </html>
+    `,
+  });
+
+  if (error) {
+    throw new Error('Failed to send OTP email');
+  }
+
+  return data;
+}
+
+// Middleware to handle validation errors
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      code: 'VALIDATION_ERROR',
+      details: errors.array()
+    });
+  }
+  next();
+};
+
+// Register/Send OTP endpoint
+router.post('/send-otp', [
+  body('name').trim().isLength({ min: 2, max: 50 }).withMessage('Name must be between 2-50 characters'),
+  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email address'),
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { name, email } = req.body;
+
+    // Initialize database helper
+    const dbHelper = new DatabaseHelper();
+
+    // Check if user already exists and is verified
+    const existingUser = await dbHelper.findUserByEmail(email);
+    if (existingUser) {
+      if (existingUser.email_verified) {
+        return res.status(400).json({
+          error: 'Email is already registered',
+          code: 'EMAIL_ALREADY_REGISTERED',
+          message: 'An account with this email already exists. Please try logging in instead.'
+        });
+      }
+
+      // User exists but not verified - resend OTP
+      const otpCode = generateOTP();
+      const otpExpires = new Date(Date.now() + (parseInt(process.env.OTP_EXPIRY_MINUTES) || 10) * 60 * 1000);
+
+      await dbHelper.updateUserOTP(email, otpCode, otpExpires);
+      await sendOTPEmail(email, name, otpCode);
+
+      return res.json({
+        message: 'OTP sent to your email',
+        code: 'OTP_RESENT'
+      });
+    }
+
+    // New user - create account and send OTP
+    const otpCode = generateOTP();
+    const otpExpires = new Date(Date.now() + (parseInt(process.env.OTP_EXPIRY_MINUTES) || 10) * 60 * 1000);
+
+    await dbHelper.createUser({
+      name,
+      email,
+      otpCode,
+      otpExpires
+    });
+
+    await sendOTPEmail(email, name, otpCode);
+
+    res.status(201).json({
+      message: 'Account created and OTP sent to your email',
+      code: 'ACCOUNT_CREATED'
+    });
+
+  } catch (error) {
+    console.error('Send OTP error:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to send verification code',
+      code: 'SERVER_ERROR',
+      details: error.stack
+    });
+  }
+});
+
+// Verify OTP endpoint
+router.post('/verify-otp', [
+  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email address'),
+  body('otp').isLength({ min: 4, max: 10 }).withMessage('Please provide the verification code'),
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    const dbHelper = new DatabaseHelper();
+    const verifiedUser = await dbHelper.verifyAndClearOTP(email, otp.toUpperCase());
+
+    if (!verifiedUser) {
+      return res.status(400).json({
+        error: 'Invalid or expired verification code',
+        code: 'INVALID_OTP'
+      });
+    }
+
+    // Generate JWT token (for future use)
+    // const token = jwt.sign(
+    //   { userId: verifiedUser.id, email: verifiedUser.email },
+    //   process.env.JWT_SECRET,
+    //   { expiresIn: process.env.JWT_EXPIRES_IN }
+    // );
+
+    res.json({
+      message: 'Email verified successfully! Welcome to Astrivya.',
+      code: 'VERIFICATION_SUCCESS',
+      user: {
+        id: verifiedUser.id,
+        name: verifiedUser.name,
+        email: verifiedUser.email,
+        emailVerified: true
+      }
+      // token // Uncomment when session management is added
+    });
+
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    res.status(500).json({
+      error: 'Failed to verify code',
+      code: 'SERVER_ERROR'
+    });
+  }
+});
+
+// Check email availability endpoint
+router.post('/check-email', [
+  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email address'),
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const dbHelper = new DatabaseHelper();
+    const user = await dbHelper.findUserByEmail(email);
+
+    if (user && user.email_verified) {
+      return res.json({
+        available: false,
+        message: 'Email is already registered',
+        canLogin: true
+      });
+    }
+
+    res.json({
+      available: true,
+      message: 'Email is available for registration'
+    });
+
+  } catch (error) {
+    console.error('Check email error:', error);
+    res.status(500).json({
+      error: 'Server error',
+      code: 'SERVER_ERROR'
+    });
+  }
+});
+
+// Login with OTP endpoint
+router.post('/login-otp', [
+  body('email').isEmail().normalizeEmail().withMessage('Please provide a valid email address'),
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { email } = req.body;
+    const dbHelper = new DatabaseHelper();
+
+    // Check if user exists
+    const user = await dbHelper.findUserByEmail(email);
+
+    if (!user || !user.email_verified) {
+      return res.status(400).json({
+        error: 'Email not found on waitlist',
+        code: 'EMAIL_NOT_REGISTERED',
+        message: 'This email is not registered. Please join the waitlist first.'
+      });
+    }
+
+    // Generate and send OTP
+    const otpCode = generateOTP();
+    const otpExpires = new Date(Date.now() + (parseInt(process.env.OTP_EXPIRY_MINUTES) || 10) * 60 * 1000);
+
+    await dbHelper.updateUserOTP(email, otpCode, otpExpires);
+    await sendOTPEmail(email, user.name, otpCode);
+
+    res.json({
+      message: 'Login OTP sent to your email',
+      code: 'OTP_SENT'
+    });
+
+  } catch (error) {
+    console.error('Login OTP error:', error);
+    res.status(500).json({
+      error: 'Failed to send login code',
+      code: 'SERVER_ERROR'
+    });
+  }
+});
+
+module.exports = router;
