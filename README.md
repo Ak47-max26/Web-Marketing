@@ -24,3 +24,6 @@ Key benefits include: improved campaign ROI (e.g. “Increased email CTR by 27% 
 - **Database:** MongoDB – flexible document store for campaign and user data.  
 - **Infrastructure:** Docker & Kubernetes (or AWS ECS/EKS) for containerization and orchestration.  
 - **CI/CD:** GitHub Actions for build/test; Docker Hub for container images.  
+SEO Marketing Tool
+Focus: keyword analysis, ranking tracking
+Add: Google Search Console integration
