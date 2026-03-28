@@ -27,3 +27,4 @@ Key benefits include: improved campaign ROI (e.g. “Increased email CTR by 27% 
 SEO Marketing Tool
 Focus: keyword analysis, ranking tracking
 Add: Google Search Console integration
+You can also build npm run files beyond the tech stack used for future endeavours
